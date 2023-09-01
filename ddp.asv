@@ -1,0 +1,231 @@
+
+clear all;
+close all;
+
+
+% Horizon 
+dt = 0.01;
+Horizon = 8/dt;
+% Number of Iterations
+num_iter = 100;
+
+% Discretization
+
+
+% Weight in Final State:
+Q = diag([0.01, 0.01, 200, 0.1,0.1,0.01, 1,1,1, 85,85,85]);
+Q_f = 1*eye(12,12);
+Q_f(1,1) = 1000;
+Q_f(2,2) = 1000;
+Q_f(3,3) = 1000;
+
+% Weight in the Control:
+R = diag([0.001, 0.001, 0.001, 0.001]);
+
+% Initial Configuration:
+xo = zeros(12,1);
+xo(1,1) = -3;
+xo(2,1) = -2;
+xo(3,1) = -1;
+xo(4,1) = 0;
+xo(5,1) = 0;
+xo(6,1) = 0;
+xo(7,1) = 0;
+xo(8,1) = 0;
+xo(9,1) = 0;
+xo(10,1) = 0;
+xo(11,1) = 0;
+xo(12,1) = 0;
+
+% Initial Control:
+
+u_k = 0.5*9.81*ones(4,Horizon-1)/4;
+du_k = zeros(4,Horizon-1);
+
+
+% Initial trajectory:
+x_traj = zeros(12, Horizon);
+ 
+
+% Target: 
+p_target = zeros(12,1);
+p_target(1,1) = 5;
+p_target(2,1) = 3;
+p_target(3,1) = 2;
+
+
+
+% Learning Rate:c
+gamma = 0.3
+ 
+ 
+for k = 1:num_iter
+
+%------------------------------------------------> Linearization of the dynamics
+%------------------------------------------------> Quadratic Approximations of the cost function 
+for  j = 1:(Horizon-1)
+    
+     [l0,l_x,l_xx,l_u,l_uu,l_ux] = fnCost(x_traj(:,j), u_k(:,j), R, Q, dt);
+      q0(j) = dt * l0;
+      q_k(:,j) = dt * l_x;
+      Q_k(:,:,j) = dt * l_xx;
+      r_k(:,j) = dt * l_u;
+      R_k(:,:,j) = dt * l_uu;
+      P_k(:,:,j) = dt * l_ux; 
+    
+    [dfx,dfu] = fnState_And_Control_Transition_Matrices(x_traj(:,j),u_k(:,j),du_k(:,j),dt);
+   
+    A(:,:,j) = eye(12,12) + dfx * dt;
+    B(:,:,j) = dfu * dt;  
+end
+
+
+%------------------------------------------------> Find the controls
+Vxx(:,:,Horizon)= Q_f;
+Vx(:,Horizon) = Q_f * (x_traj(:,Horizon) - p_target); 
+V(Horizon) = 0.5 * (x_traj(:,Horizon) - p_target)' * Q_f * (x_traj(:,Horizon) - p_target); 
+
+
+%------------------------------------------------> Backpropagation of the Value Function
+for j = (Horizon-1):-1:1
+     
+   H = R_k(:,:,j) + B(:,:,j)' * Vxx(:,:,j+1) * B(:,:,j);
+   G = P_k(:,:,j) + B(:,:,j)' * Vxx(:,:,j+1) * A(:,:,j);   
+   g = r_k(:,j) +  B(:,:,j)' * Vx(:,j+1);
+   
+ 
+   inv_H = H\eye(4);
+   %feedback
+   L_k(:,:,j)= - inv_H * G;
+   %feedforward
+   l_k (:,j) = - inv_H *g;  
+   
+   % TODO: add the corresponding new ones
+
+   % Old ones
+   Vxx(:,:,j) = Q_k(:,:,j)+ A(:,:,j)' * Vxx(:,:,j+1) * A(:,:,j) + L_k(:,:,j)' * H * L_k(:,:,j) + L_k(:,:,j)' * G + G' * L_k(:,:,j);
+   Vx(:,j)= q_k(:,j) +  A(:,:,j)' *  Vx(:,j+1) + L_k(:,:,j)' * g + G' * l_k(:,j) + L_k(:,:,j)'*H * l_k(:,j);
+   V(:,j) = q0(j) + V(j+1)   +   0.5 *  l_k (:,j)' * H * l_k (:,j) + l_k (:,j)' * g;
+end 
+
+%----------------------------------------------------> Forward Propagaion: 
+
+%--------------------------------> Find the controls/ forward 
+dx = zeros(12,1);
+for i=1:(Horizon-1)    
+   du = l_k(:,i) + L_k(:,:,i) * dx;
+   dx = A(:,:,i) * dx + B(:,:,i) * du;  
+   u_new(:,i) = u_k(:,i) + gamma * du;
+end
+
+u_k = u_new;
+
+
+%--------------------------------> Simulation of the Nonlinear System
+[x_traj] = fnSimulate(xo,u_new,Horizon,dt);
+[Cost(:,k)] =  fnCostComputation(x_traj,u_k,p_target,dt,Q_f,R,Q);
+x1(k,:) = x_traj(1,:);
+ 
+
+fprintf('DDP Iteration %d,  Current Cost = %e \n',k,Cost(1,k));
+end %% end iterating over the algorithm 
+%% Plotting the Result
+time(1)=0;
+for i= 2:Horizon
+    time(i) =time(i-1) + dt;  
+end
+
+% subplot(2,6,1)    
+% plot(Cost,'linewidth',2); 
+% xlabel('Iterations','fontsize',10)
+% title('Cost Function','fontsize',10);
+% grid on;
+
+subplot(2,6,1)
+plot(time,x_traj(1,:),'linewidth',2);  
+hold on;
+plot(time,p_target(1,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('x displacement (m)','fontsize',10); 
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,2);hold on;
+plot(time,x_traj(2,:),'linewidth',2); 
+hold on;
+plot(time,p_target(2,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('y displacement (m)','fontsize',10);
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+   
+subplot(2,6,3);hold on
+plot(time,x_traj(3,:),'linewidth',2); 
+plot(time,p_target(3,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+   
+
+
+subplot(2,6,4)
+hold on
+plot(time,x_traj(4,:),'linewidth',2);  
+plot(time,p_target(4,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('x displacement (m)','fontsize',10); 
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,5);hold on;
+plot(time,x_traj(5,:),'linewidth',2); 
+hold on;
+plot(time,p_target(5,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('y displacement (m)','fontsize',10);
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+   
+subplot(2,6,6);hold on
+plot(time,x_traj(6,:),'linewidth',2); 
+plot(time,p_target(6,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,7);hold on
+plot(time,x_traj(7,:),'linewidth',2); 
+plot(time,p_target(7,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,8);hold on
+plot(time,x_traj(8,:),'linewidth',2); 
+plot(time,p_target(8,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,9);hold on
+plot(time,x_traj(9,:),'linewidth',2); 
+plot(time,p_target(9,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+subplot(2,6,10);hold on
+plot(time,x_traj(10,:),'linewidth',2); 
+plot(time,p_target(10,1)*ones(1,Horizon),'red','linewidth',2)
+ylabel('z displacement (m)','fontsize',10)
+xlabel('Time in sec','fontsize',10)
+hold off;
+grid on;
+
+
+quadrotor_visualize(x_traj, u_k, time);
